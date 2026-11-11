@@ -1,0 +1,11 @@
+configuration:
+  custom_model_dir:
+    name: Custom wake word folder
+    description: >-
+      Folder for your own .tflite / .onnx openWakeWord models. Models uploaded
+      in the web UI are saved here. Must be inside /share.
+  debug_logging:
+    name: Debug logging
+    description: Write detailed information to the add-on log.
+network:
+  10400/tcp: Wyoming protocol (used by Home Assistant and voice satellites)

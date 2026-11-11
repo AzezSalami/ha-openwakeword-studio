@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>openWakeWord Studio</title>
+  <link rel="stylesheet" href="static/style.css?v=__VERSION__">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
+        <rect width="48" height="48" rx="12" fill="var(--accent)"/>
+        <g fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round">
+          <path d="M10 24v0M17 18v12M24 11v26M31 17v14M38 22v4"/>
+        </g>
+      </svg>
+      <div>
+        <h1>openWakeWord Studio</h1>
+        <div class="sub"><span id="conn-dot" class="dot"></span><span id="conn-text">Connecting…</span></div>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+      <button role="tab" data-tab="models">Wake words</button>
+      <button role="tab" data-tab="test">Test</button>
+      <button role="tab" data-tab="settings">Settings</button>
+      <button role="tab" data-tab="help">Setup guide</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Overview -->
+    <section id="tab-overview" class="tab">
+      <div class="tiles">
+        <div class="tile"><div class="tile-label">Wake words enabled</div><div class="tile-value" id="stat-models">–</div></div>
+        <div class="tile"><div class="tile-label">Devices listening</div><div class="tile-value" id="stat-clients">–</div></div>
+        <div class="tile"><div class="tile-label">Detections since start</div><div class="tile-value" id="stat-detections">–</div></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Listening now</h2><span class="muted">Live scores from Home Assistant and satellites</span></div>
+        <div id="clients"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Recent detections</h2></div>
+        <div id="detections"></div>
+      </div>
+    </section>
+
+    <!-- Wake words -->
+    <section id="tab-models" class="tab" hidden>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Add a custom wake word model">
+        <strong>Add a custom wake word</strong>
+        <span>Drop a <code>.tflite</code> or <code>.onnx</code> openWakeWord model here, or click to choose a file.</span>
+        <input id="file-model" type="file" accept=".tflite,.onnx" multiple hidden>
+      </div>
+      <div class="row-between">
+        <p class="muted" id="models-hint"></p>
+        <button class="btn ghost" id="btn-rescan" title="Look again for model files copied into the folder">Rescan folder</button>
+      </div>
+      <div id="models" class="grid"></div>
+    </section>
+
+    <!-- Test -->
+    <section id="tab-test" class="tab" hidden>
+      <div class="card">
+        <div class="card-head"><h2>Try your wake words</h2><span class="muted">Speak into your microphone or play back a recording and watch the scores</span></div>
+        <div class="field-label">Wake words to test</div>
+        <div id="test-chips" class="chips"></div>
+        <div class="actions">
+          <button class="btn primary" id="btn-mic">Start microphone</button>
+          <button class="btn" id="btn-file">Test an audio file…</button>
+          <input id="file-audio" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a" hidden>
+          <div class="meter" id="mic-meter" hidden><div></div></div>
+          <span class="muted" id="test-status"></span>
+        </div>
+        <div id="mic-note" class="note" hidden></div>
+        <div id="test-banner" class="banner" hidden></div>
+        <div class="chart-wrap"><canvas id="chart" height="260"></canvas></div>
+        <div id="legend" class="legend"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Detections in this test</h2><button class="btn ghost" id="btn-clear-test">Clear</button></div>
+        <div id="test-detections"><p class="empty">Nothing detected yet.</p></div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="tab" hidden>
+      <div class="card">
+        <div class="card-head"><h2>Detection</h2><span class="muted">Changes apply immediately, also to devices that are already listening</span></div>
+        <div class="setting">
+          <div><label for="set-threshold">Threshold</label>
+            <p>How confident the model must be (0–1). Lower it if the wake word is missed; raise it if it triggers by mistake.</p></div>
+          <div class="control"><input type="range" id="set-threshold" data-key="threshold" min="0.05" max="0.95" step="0.05"><output></output></div>
+        </div>
+        <div class="setting">
+          <div><label for="set-trigger">Trigger level</label>
+            <p>How many audio frames (80&nbsp;ms each) must be above the threshold before a detection counts. Higher means fewer false activations but slightly slower response.</p></div>
+          <div class="control"><input type="range" id="set-trigger" data-key="trigger_level" min="1" max="10" step="1"><output></output></div>
+        </div>
+        <div class="setting">
+          <div><label for="set-refractory">Pause after detection</label>
+            <p>Seconds to wait before the same wake word can be detected again.</p></div>
+          <div class="control"><input type="range" id="set-refractory" data-key="refractory_seconds" min="0.5" max="10" step="0.5"><output></output></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Audio clean-up</h2></div>
+        <div class="setting">
+          <div><label for="set-vad">Voice activity filter</label>
+            <p>Only accept a wake word while speech is detected (Silero VAD). Helps against noises such as music or a TV. 0 turns it off; 0.3–0.5 is a good start.</p></div>
+          <div class="control"><input type="range" id="set-vad" data-key="vad_threshold" min="0" max="0.9" step="0.05"><output></output></div>
+        </div>
+        <div class="setting">
+          <div><label for="set-ns">Noise suppression</label>
+            <p id="ns-help">Clean up steady background noise (fans, hum) with Speex before detection.</p></div>
+          <div class="control"><label class="switch"><input type="checkbox" id="set-ns"><span></span></label></div>
+        </div>
+      </div>
+      <p class="muted center" id="about"></p>
+    </section>
+
+    <!-- Help -->
+    <section id="tab-help" class="tab" hidden>
+      <div class="card prose">
+        <h2>Use your wake words in Home Assistant</h2>
+        <ol class="steps">
+          <li><strong>Add the integration.</strong> Go to <em>Settings → Devices &amp; services</em>. Home Assistant should show a discovered <em>Wyoming Protocol</em> entry called “openWakeWord Studio” — press <em>Add</em>.
+            <div class="hint">Not discovered? Choose <em>Add integration → Wyoming Protocol</em> and enter host <code id="help-host">…</code> and port <code id="help-port">10400</code>.</div></li>
+          <li><strong>Pick a wake word.</strong> Open <em>Settings → Voice assistants</em>, edit your assistant, and under <em>Wake word</em> choose <em>openwakeword</em> as engine and one of your enabled wake words.</li>
+          <li><strong>Talk to a device.</strong> Any voice satellite that streams audio to Home Assistant for wake word detection will now use this add-on. Watch it happen on the <em>Overview</em> tab.</li>
+        </ol>
+      </div>
+      <div class="card prose">
+        <h2>Tuning tips</h2>
+        <ul>
+          <li>Use the <strong>Test</strong> tab: say the wake word a few times and note the peak score, then say other things. Put the threshold between the two.</li>
+          <li>False activations? Raise the threshold or trigger level, or turn on the voice activity filter.</li>
+          <li>Missed activations? Lower the threshold for that wake word only (on its card, “Custom sensitivity”).</li>
+          <li>The microphone test needs Home Assistant to be opened over <code>https://</code>. Audio file tests work everywhere.</li>
+        </ul>
+      </div>
+      <div class="card prose">
+        <h2>Custom wake words</h2>
+        <p>Train your own model with the <a href="https://github.com/dscripka/openWakeWord#training-new-models" target="_blank" rel="noopener">openWakeWord training notebook</a>, or pick one from the community, then upload the <code>.tflite</code> or <code>.onnx</code> file on the <em>Wake words</em> tab. Files are stored in <code id="help-dir">/share/openwakeword</code>; models you copy there yourself show up after <em>Rescan folder</em>.</p>
+        <p>After adding or enabling a wake word, reload the Wyoming integration in Home Assistant so it appears in the list.</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="toasts" aria-live="polite"></div>
+  <script src="static/app.js?v=__VERSION__"></script>
+</body>
+</html>
