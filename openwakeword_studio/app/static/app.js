@@ -16,6 +16,7 @@ function wsUrl(path) {
 async function api(method, path, body) {
   const opts = { method, headers: {} };
   if (body instanceof FormData) opts.body = body;
+  else if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) { opts.body = body; opts.headers["Content-Type"] = "application/octet-stream"; }
   else if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers["Content-Type"] = "application/json"; }
   const resp = await fetch(path, opts);
   let data = null;
@@ -60,6 +61,7 @@ function applyState(next) {
   renderModels();
   renderSettings();
   renderTestChips();
+  renderTraining(state.training);
   $("#help-host").textContent = state.hostname || location.hostname;
   $("#help-port").textContent = state.wyoming_port;
   $("#help-dir").textContent = state.custom_dir;
@@ -71,6 +73,7 @@ function showTab(name) {
   $$(".tabs button").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === name));
   $$(".tab").forEach((s) => (s.hidden = s.id !== `tab-${name}`));
   if (name === "test") drawChart();
+  if (name === "create") openCreateTab();
   try { sessionStorage.setItem("tab", name); } catch (e) { /* ignore */ }
 }
 $$(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
@@ -84,6 +87,7 @@ function connectEvents() {
     const msg = JSON.parse(ev.data);
     if (msg.type === "state") applyState(msg.state);
     else if (msg.type === "scores") updateLiveScores(msg);
+    else if (msg.type === "training") { if (state) state.training = msg.status; renderTraining(msg.status); }
     else if (msg.type === "detection" && state) {
       state.detections.unshift(msg.detection);
       state.detections.length = Math.min(state.detections.length, 50);
@@ -196,6 +200,7 @@ function renderModels() {
         <span class="tag ${m.source === "custom" ? "accent" : ""}">${m.source === "custom" ? "Custom" : "Built-in"}</span>
         <span>${esc(m.framework)} · ${sizeText(m.size)}</span>
       </div>
+      ${m.trained && m.trained.metrics ? `<div class="muted">Made here · recognised ${Math.round(m.trained.metrics.recall * 100)}% of test voices · ${fmt(m.trained.metrics.false_per_hour, 1)} false activations per hour in testing</div>` : ""}
       ${m.usable ? "" : `<div class="warn">This .tflite model can't run on this system. Upload the .onnx version instead.</div>`}
       <label class="check"><input type="checkbox" data-act="custom" ${custom ? "checked" : ""}> Custom sensitivity</label>
       ${custom ? `<div class="tune">
@@ -534,6 +539,196 @@ $("#file-audio").addEventListener("change", (ev) => {
   const file = ev.target.files[0];
   ev.target.value = "";
   if (file) testFile(file);
+});
+
+/* ---------- create ---------- */
+const create = { samples: [], recorder: null, languagesLoaded: false, timer: null, lastState: null, shownResult: null };
+const phraseInput = $("#create-phrase");
+const currentPhrase = () => phraseInput.value.trim().replace(/\s+/g, " ");
+const sampleUrl = (name = "") => `api/training/samples${name ? "/" + encodeURIComponent(name) : ""}?phrase=${encodeURIComponent(currentPhrase())}`;
+
+async function openCreateTab() {
+  if (create.languagesLoaded) return;
+  loadSamples();
+  create.languagesLoaded = true;
+  try {
+    const data = await api("GET", "api/training/languages");
+    let saved = "en_US";
+    try { saved = localStorage.getItem("language") || saved; } catch (e) { /* ignore */ }
+    const select = $("#create-language");
+    select.innerHTML = data.languages.map((l) => `<option value="${esc(l.code)}">${esc(l.name)}</option>`).join("");
+    if (data.languages.some((l) => l.code === saved)) select.value = saved;
+    if (!data.online) $("#create-language-hint").textContent = "The list of languages could not be loaded — training needs internet access (huggingface.co).";
+  } catch (err) {
+    create.languagesLoaded = false;
+    if (state && !state.can_train) $("#btn-train").disabled = true;
+  }
+}
+$("#create-language").addEventListener("change", (ev) => { try { localStorage.setItem("language", ev.target.value); } catch (e) { /* ignore */ } });
+
+function renderSamples() {
+  $("#samples").innerHTML = create.samples.map((s, i) => `
+    <span class="sample" data-name="${esc(s.name)}"><button data-act="play" title="Play" aria-label="Play recording ${i + 1}">▶</button>${fmt(s.seconds, 1)} s<button data-act="delete" title="Delete" aria-label="Delete recording ${i + 1}">✕</button></span>`).join("");
+  $("#record-status").textContent = create.samples.length ? `${create.samples.length} recording${create.samples.length > 1 ? "s" : ""}` : "";
+}
+async function loadSamples() {
+  if (currentPhrase().length < 3) { create.samples = []; renderSamples(); return; }
+  try { create.samples = (await api("GET", sampleUrl())).samples; } catch (e) { create.samples = []; }
+  renderSamples();
+}
+let phraseTimer = null;
+phraseInput.addEventListener("input", () => {
+  clearTimeout(phraseTimer);
+  phraseTimer = setTimeout(() => {
+    try { localStorage.setItem("phrase", currentPhrase()); } catch (e) { /* ignore */ }
+    loadSamples();
+  }, 400);
+});
+try { phraseInput.value = localStorage.getItem("phrase") || ""; } catch (e) { /* ignore */ }
+
+$("#samples").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button");
+  if (!btn) return;
+  const name = btn.closest(".sample").dataset.name;
+  if (btn.dataset.act === "play") new Audio(sampleUrl(name)).play().catch(() => toast("Could not play the recording", true));
+  else {
+    try { create.samples = (await api("DELETE", sampleUrl(name))).samples; renderSamples(); }
+    catch (err) { toast(err.message, true); }
+  }
+});
+
+function needPhrase() {
+  if (currentPhrase().length >= 3) return true;
+  toast("Type the wake word first", true);
+  phraseInput.focus();
+  return false;
+}
+async function sendSample(pcm) {
+  try { create.samples = (await api("POST", sampleUrl(), pcm)).samples; renderSamples(); return true; }
+  catch (err) { toast(err.message, true); return false; }
+}
+
+async function stopRecording(save) {
+  const rec = create.recorder;
+  if (!rec) return;
+  create.recorder = null;
+  clearTimeout(rec.timeout);
+  rec.stream.getTracks().forEach((t) => t.stop());
+  rec.ctx.close().catch(() => {});
+  const btn = $("#btn-record");
+  btn.classList.remove("recording");
+  btn.textContent = "Record a sample";
+  if (!save) return;
+  const pcm = new Int16Array(rec.chunks.reduce((n, c) => n + c.length, 0));
+  let offset = 0;
+  for (const c of rec.chunks) { pcm.set(c, offset); offset += c.length; }
+  await sendSample(pcm);
+}
+
+async function startRecording() {
+  if (!needPhrase()) return;
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    toast("Recording needs Home Assistant to be opened over https://. Use “Add audio files” instead.", true);
+    return;
+  }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } }); }
+  catch (err) { toast(err.name === "NotAllowedError" ? "Microphone permission was denied" : `Microphone error: ${err.message}`, true); return; }
+  try {
+    let ctx, source;
+    try { ctx = new AudioContext({ sampleRate: 16000 }); source = ctx.createMediaStreamSource(stream); }
+    catch (err) { if (ctx) ctx.close().catch(() => {}); ctx = new AudioContext(); source = ctx.createMediaStreamSource(stream); }
+    await ctx.audioWorklet.addModule("static/recorder-worklet.js");
+    const node = new AudioWorkletNode(ctx, "recorder", { numberOfOutputs: 0 });
+    const rec = { stream, ctx, chunks: [] };
+    node.port.onmessage = (ev) => rec.chunks.push(new Int16Array(ev.data));
+    source.connect(node);
+    if (ctx.state === "suspended") await ctx.resume();
+    rec.timeout = setTimeout(() => stopRecording(true), 3000);
+    create.recorder = rec;
+    const btn = $("#btn-record");
+    btn.classList.add("recording");
+    btn.textContent = "Say it now… (click to finish)";
+  } catch (err) {
+    stream.getTracks().forEach((t) => t.stop());
+    toast(`Could not record: ${err.message}`, true);
+  }
+}
+$("#btn-record").addEventListener("click", () => (create.recorder ? stopRecording(true) : startRecording()));
+$("#btn-sample-file").addEventListener("click", () => { if (needPhrase()) $("#file-sample").click(); });
+$("#file-sample").addEventListener("change", async (ev) => {
+  const files = [...ev.target.files];
+  ev.target.value = "";
+  for (const file of files) {
+    try { await sendSample(await decodeTo16k(file)); }
+    catch (err) { toast(`${file.name}: could not be read as audio`, true); }
+  }
+});
+
+$("#btn-train").addEventListener("click", async () => {
+  if (!needPhrase()) return;
+  if (create.recorder) await stopRecording(true);
+  const quality = $("input[name=quality]:checked").value;
+  try {
+    renderTraining(await api("POST", "api/training/start", { phrase: currentPhrase(), language: $("#create-language").value, quality }));
+  } catch (err) { toast(err.message, true); }
+});
+$("#btn-cancel-train").addEventListener("click", async () => {
+  if (!confirm("Stop the training?")) return;
+  try { await api("POST", "api/training/cancel"); } catch (err) { toast(err.message, true); }
+});
+
+const duration = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+function renderTraining(status) {
+  if (!status) return;
+  const running = status.state === "running";
+  $("#create-form").hidden = running;
+  $("#create-progress").hidden = !running;
+  clearInterval(create.timer);
+  if (running) {
+    $("#progress-title").textContent = `Training “${status.phrase}”…`;
+    $("#progress-bar").style.width = Math.round(status.progress * 100) + "%";
+    $("#progress-stage").textContent = `${status.stage} · ${Math.round(status.progress * 100)}%`;
+    $("#progress-log").innerHTML = status.log.slice(-6).map((l) => `<li>${esc(l)}</li>`).join("");
+    const tick = () => ($("#progress-time").textContent = duration(Date.now() / 1000 - status.started));
+    tick();
+    create.timer = setInterval(tick, 1000);
+  }
+  const box = $("#create-result");
+  const key = `${status.state}:${status.finished}`;
+  if (running || status.state === "idle" || status.state === "cancelled") { box.hidden = true; }
+  else if (create.shownResult !== key) {
+    create.shownResult = key;
+    box.hidden = false;
+    if (status.state === "error") {
+      box.innerHTML = `<div class="card-head"><h2>Training “${esc(status.phrase)}” did not finish</h2></div><div class="warn">${esc(status.error)}</div>`;
+    } else {
+      const m = status.result.metrics;
+      box.innerHTML = `
+        <div class="card-head"><h2>“${esc(status.result.phrase)}” is ready</h2><span class="muted">trained in ${duration(status.finished - status.started)}</span></div>
+        <div class="result-stats">
+          <div><b>${Math.round(m.recall * 100)}%</b><span>of unseen test voices recognised</span></div>
+          ${m.user_recall != null ? `<div><b>${Math.round(m.user_recall * 100)}%</b><span>of your held-back recordings recognised</span></div>` : ""}
+          <div><b>${fmt(m.false_per_hour, 1)}</b><span>false activations per hour on ${fmt(m.held_out_hours, 1)} h of speech, music and noise</span></div>
+          <div><b>${Math.round(m.similar_rejected * 100)}%</b><span>of similar-sounding phrases ignored</span></div>
+        </div>
+        <p class="hint">These numbers come from computer-generated voices and recorded background audio, so real life will differ — try it yourself. The threshold for this wake word was set to <strong>${fmt(m.recommended_threshold)}</strong>; you can change it on its card. ${m.user_recordings ? "" : "Adding recordings of your own voice and training again usually helps."}</p>
+        <div class="actions">
+          <button class="btn primary" data-try="${esc(status.result.model_id)}">Try it now</button>
+          <button class="btn" data-goto="models">Show wake words</button>
+        </div>
+        <p class="hint">To use it with your voice assistant, reload the Wyoming integration in Home Assistant, then pick it as wake word (see the setup guide).</p>`;
+    }
+  }
+  if (create.lastState === "running" && status.state === "cancelled") toast("Training cancelled");
+  create.lastState = status.state;
+}
+$("#create-result").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-try]");
+  if (!btn) return;
+  if (test.mode === "idle") { test.selected = new Set([btn.dataset.try]); renderTestChips(); }
+  showTab("test");
 });
 
 /* ---------- chart ---------- */

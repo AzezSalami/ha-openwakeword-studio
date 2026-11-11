@@ -241,3 +241,90 @@ async def test_ws_test_stream(hub, api):
     assert len(frames) == -(-len(pcm) // 2560)
     assert sum(len(f.get("detections", [])) for f in frames) == 1
     assert hub.detections[0]["kind"] == "test" and hub.detections[0]["source"] == "File test"
+
+
+# -- training ---------------------------------------------------------------
+def test_trainer_helpers():
+    import numpy as np
+
+    from app import trainer as tr
+
+    assert tr.slugify("Hey  Computer!") == "hey_computer"
+    assert tr.slugify("привет").startswith("wake_word_")
+    rng = np.random.default_rng(0)
+    texts = tr.negative_texts(rng, "hey computer", 300)
+    assert len(texts) == 300 and "hey computer" not in [t.lower() for t in texts]
+
+    speech = (np.sin(np.arange(12000) / 8) * 0.5).astype(np.float32)
+    padded = np.concatenate([np.zeros(8000, np.float32), speech, np.zeros(8000, np.float32)])
+    assert abs(tr.trim_silence(padded).size - (12000 + 960)) < 400
+    clip, start, end = tr.make_clip(rng, speech, [speech], (32500, 44500))
+    assert clip.shape == (tr.LONG,) and clip.dtype == np.int16
+    assert 32500 <= end <= 44500 and end - start >= 12000
+    assert tr.window_end(tr.N_WINDOWS - 1) <= tr.LONG
+
+
+def test_net_learns_and_exports_a_loadable_model(hub, tmp_path):
+    import numpy as np
+
+    from app import trainer as tr
+
+    rng = np.random.default_rng(0)
+    pattern = rng.standard_normal((tr.N_FRAMES, tr.EMB)).astype(np.float32) * 3
+    neg = rng.standard_normal((2000, tr.N_FRAMES, tr.EMB)).astype(np.float32)
+    pos = neg[:1000] * 0.5 + pattern
+    net = tr.Net(rng, np.zeros(tr.N_FRAMES * tr.EMB), np.ones(tr.N_FRAMES * tr.EMB))
+    for _ in range(300):
+        i = rng.integers(0, 1000, 64)
+        x = np.concatenate([pos[i], neg[1000 + i]])
+        y = np.concatenate([np.ones(64), np.zeros(64)]).astype(np.float32)
+        net.train_step(x, y, np.ones(128, np.float32), 2e-3)
+    assert net.predict(pos[:200]).mean() > 0.95 and net.predict(neg[1000:1200]).mean() < 0.05
+
+    path = hub.registry.custom_dir / "my_word.onnx"
+    net.export_onnx(path)
+    path.with_suffix(".json").write_text('{"phrase": "My Wörd", "metrics": {"recall": 1}}')
+    hub.registry.scan()
+    info = hub.registry.get("my_word")
+    assert info.phrase == "My Wörd" and info.trained["metrics"]["recall"] == 1
+
+    import onnxruntime as ort
+
+    session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    out = session.run(None, {"input": pos[:1]})[0]
+    assert out.shape == (1, 1) and abs(float(out[0, 0]) - float(net.predict(pos[:1])[0])) < 1e-4
+    # and it runs inside the streaming detector like any other custom model
+    results = Detector([info], hub.settings).process(b"\0" * 64000)
+    assert len(results) == 25 and all(r.scores["my_word"] < 0.5 for r in results)
+
+
+async def test_training_api_samples_and_validation(hub, api, tmp_path):
+    import numpy as np
+
+    hub.attach_trainer(tmp_path / "data", asyncio.get_running_loop())
+    tone = (np.sin(np.arange(16000) / 6) * 12000).astype(np.int16)
+    pcm = np.concatenate([np.zeros(8000, np.int16), tone, np.zeros(8000, np.int16)]).tobytes()
+
+    async with api.post("/api/training/samples", params={"phrase": "hey computer"}, data=pcm) as resp:
+        body = await resp.json()
+        assert resp.status == 200 and len(body["samples"]) == 1, body
+        name = body["samples"][0]["name"]
+        assert 0.9 < body["samples"][0]["seconds"] < 1.2  # silence trimmed
+    async with api.post("/api/training/samples", params={"phrase": "hey computer"}, data=b"\0" * 32000) as resp:
+        assert resp.status == 400  # silence
+    async with api.get(f"/api/training/samples/{name}", params={"phrase": "hey computer"}) as resp:
+        assert resp.status == 200 and (await resp.read())[:4] == b"RIFF"
+    async with api.get("/api/training/samples/..%2Fsettings.json", params={"phrase": "hey computer"}) as resp:
+        assert resp.status == 404
+    async with api.get("/api/training/samples", params={"phrase": "other phrase"}) as resp:
+        assert (await resp.json())["samples"] == []
+    async with api.delete(f"/api/training/samples/{name}", params={"phrase": "hey computer"}) as resp:
+        assert (await resp.json())["samples"] == []
+
+    async with api.post("/api/training/start", json={"phrase": "a"}) as resp:
+        assert resp.status == 400
+    async with api.post("/api/training/start", json={"phrase": "hey computer", "quality": "x"}) as resp:
+        assert resp.status == 400
+    async with api.get("/api/state") as resp:
+        state = await resp.json()
+        assert state["can_train"] and state["training"]["state"] == "idle"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -53,6 +54,14 @@ def base_name(model_id: str) -> str:
     return _VERSION_RE.sub("", model_id)
 
 
+def _read_meta(path: Path) -> dict | None:
+    try:
+        meta = json.loads(path.read_text())
+        return meta if isinstance(meta, dict) and isinstance(meta.get("phrase"), str) else None
+    except (OSError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class ModelInfo:
     id: str
@@ -62,9 +71,11 @@ class ModelInfo:
     source: str  # "builtin" | "custom"
     size: int
     usable: bool = True
+    trained: dict | None = None  # metadata of models created with the built-in trainer
 
     def as_dict(self) -> dict:
         return {
+            "trained": self.trained,
             "id": self.id,
             "phrase": self.phrase,
             "framework": self.framework,
@@ -121,9 +132,11 @@ class Registry:
                 # When both formats exist prefer a usable one, then tflite.
                 if existing and (existing.usable and (existing.framework == "tflite" or not usable)):
                     continue
+                meta = _read_meta(path.with_suffix(".json"))
                 custom[path.stem] = ModelInfo(
                     id=path.stem,
-                    phrase=phrase_from_id(path.stem),
+                    phrase=(meta or {}).get("phrase") or phrase_from_id(path.stem),
+                    trained=meta,
                     path=str(path),
                     framework=framework,
                     source="custom",

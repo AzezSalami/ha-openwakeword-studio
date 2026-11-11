@@ -2,8 +2,10 @@
 
 A Home Assistant add-on that runs [openWakeWord](https://github.com/dscripka/openWakeWord)
 as a Wyoming wake word service **and** gives it a friendly web UI: switch wake
-words on and off, upload custom models, test them with your microphone or an
+words on and off, **train your own wake word on the device**, upload custom models, test them with your microphone or an
 audio file while watching live scores, and tune sensitivity without touching YAML.
+
+![Creating a wake word](docs/create.png)
 
 ![Testing a wake word](docs/test.png)
 
@@ -33,6 +35,7 @@ openwakeword_studio/
   app/                        Python service
     __main__.py               startup, Supervisor discovery
     engine.py                 streaming detection on top of openwakeword.Model
+    trainer.py                on-device wake word training (Piper + NumPy)
     wyoming_server.py         Wyoming protocol (port 10400)
     web.py                    REST + WebSocket API (ingress, port 8099)
     registry.py settings.py hub.py

@@ -93,6 +93,11 @@ async def main() -> None:
         custom_dir,
     )
 
+    try:
+        hub.attach_trainer(data_dir, asyncio.get_running_loop())
+    except ImportError as err:
+        _LOGGER.warning("Wake word training is unavailable: %s", err)
+
     wyoming = AsyncTcpServer("0.0.0.0", wyoming_port)
     await wyoming.start(partial(WakeHandler, hub))
     _LOGGER.info("Wyoming server listening on port %d", wyoming_port)

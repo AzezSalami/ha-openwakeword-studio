@@ -23,6 +23,7 @@
     <nav class="tabs" role="tablist">
       <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
       <button role="tab" data-tab="models">Wake words</button>
+      <button role="tab" data-tab="create">Create</button>
       <button role="tab" data-tab="test">Test</button>
       <button role="tab" data-tab="settings">Settings</button>
       <button role="tab" data-tab="help">Setup guide</button>
@@ -59,6 +60,53 @@
         <button class="btn ghost" id="btn-rescan" title="Look again for model files copied into the folder">Rescan folder</button>
       </div>
       <div id="models" class="grid"></div>
+    </section>
+
+    <!-- Create -->
+    <section id="tab-create" class="tab" hidden>
+      <div class="card" id="create-form">
+        <div class="card-head"><h2>Create your own wake word</h2><span class="muted">Trained on this device from computer-generated voices — and yours, if you like</span></div>
+        <div class="form-grid">
+          <div>
+            <label class="field-label" for="create-phrase">Wake word</label>
+            <input type="text" id="create-phrase" class="input" maxlength="40" placeholder="e.g. hey computer" autocomplete="off" spellcheck="false">
+            <p class="hint">Three or four syllables work best, like “hey computer” or “okay kitchen”. Short or everyday words trigger by accident.</p>
+          </div>
+          <div>
+            <label class="field-label" for="create-language">Language it is spoken in</label>
+            <select id="create-language" class="input"><option value="en_US">English (United States)</option></select>
+            <p class="hint" id="create-language-hint">Spell the wake word the way it is written in this language.</p>
+          </div>
+        </div>
+
+        <div class="field-label">Your voice <span class="optional">optional, recommended</span></div>
+        <p class="hint">Record yourself saying the wake word 5–20 times — near and far, loud and quiet. Everyone who will use it can add recordings. This makes it noticeably better at recognising you.</p>
+        <div class="actions">
+          <button class="btn" id="btn-record">Record a sample</button>
+          <button class="btn" id="btn-sample-file">Add audio files…</button>
+          <input id="file-sample" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a" multiple hidden>
+          <span class="muted" id="record-status"></span>
+        </div>
+        <div id="samples" class="samples"></div>
+
+        <div class="field-label">Training effort</div>
+        <div class="choices" id="create-quality" role="radiogroup">
+          <label class="choice"><input type="radio" name="quality" value="quick"><span><strong>Quick</strong><em>800 voice examples. Good for trying out a phrase.</em></span></label>
+          <label class="choice"><input type="radio" name="quality" value="standard" checked><span><strong>Standard</strong><em>2,500 voice examples. Recommended.</em></span></label>
+          <label class="choice"><input type="radio" name="quality" value="thorough"><span><strong>Thorough</strong><em>6,000 voice examples. Fewer mistakes, takes the longest.</em></span></label>
+        </div>
+        <p class="hint">Standard takes roughly 10 minutes on a modern mini PC and up to an hour on a Raspberry Pi 4. The first training downloads about 400&nbsp;MB of voices and sound data, so the add-on needs internet access. Wake word detection keeps running meanwhile, but may respond more slowly.</p>
+        <div class="actions"><button class="btn primary" id="btn-train">Start training</button></div>
+      </div>
+
+      <div class="card" id="create-progress" hidden>
+        <div class="card-head"><h2 id="progress-title">Training…</h2><button class="btn ghost danger" id="btn-cancel-train">Cancel</button></div>
+        <div class="progress"><div id="progress-bar"></div></div>
+        <div class="row-between"><span id="progress-stage" class="muted"></span><span id="progress-time" class="muted"></span></div>
+        <ul id="progress-log" class="log"></ul>
+      </div>
+
+      <div class="card" id="create-result" hidden></div>
     </section>
 
     <!-- Test -->
@@ -143,7 +191,7 @@
       </div>
       <div class="card prose">
         <h2>Custom wake words</h2>
-        <p>Train your own model with the <a href="https://github.com/dscripka/openWakeWord#training-new-models" target="_blank" rel="noopener">openWakeWord training notebook</a>, or pick one from the community, then upload the <code>.tflite</code> or <code>.onnx</code> file on the <em>Wake words</em> tab. Files are stored in <code id="help-dir">/share/openwakeword</code>; models you copy there yourself show up after <em>Rescan folder</em>.</p>
+        <p>Make your own on the <a href="#" data-goto="create">Create</a> tab. You can also upload a <code>.tflite</code> or <code>.onnx</code> model made elsewhere (for example with the <a href="https://github.com/dscripka/openWakeWord#training-new-models" target="_blank" rel="noopener">openWakeWord training notebook</a>) on the <em>Wake words</em> tab. Files are stored in <code id="help-dir">/share/openwakeword</code>; models you copy there yourself show up after <em>Rescan folder</em>.</p>
         <p>After adding or enabling a wake word, reload the Wyoming integration in Home Assistant so it appears in the list.</p>
       </div>
     </section>

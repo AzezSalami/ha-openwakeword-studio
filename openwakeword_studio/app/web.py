@@ -143,6 +143,7 @@ async def upload_models(request: web.Request) -> web.Response:
                 errors.append(f"{part.filename}: not a valid openWakeWord model")
                 continue
             temp.replace(target)
+            target.with_suffix(".json").unlink(missing_ok=True)  # metadata of a replaced model
             added.append(target.stem)
             _LOGGER.info("Added custom wake word %s", target.name)
         except OSError as err:
@@ -165,7 +166,7 @@ async def delete_model(request: web.Request) -> web.Response:
         return _error(400, "Built-in wake words cannot be deleted; disable it instead")
     path = Path(info.path)
     try:
-        for suffix in MODEL_EXTENSIONS:
+        for suffix in (*MODEL_EXTENSIONS, ".json"):
             path.with_suffix(suffix).unlink(missing_ok=True)
     except OSError as err:
         return _error(500, f"Could not delete: {err}")
@@ -173,6 +174,102 @@ async def delete_model(request: web.Request) -> web.Response:
     hub.registry.scan()
     hub.publish_state()
     return web.json_response(hub.state())
+
+
+# -- training --------------------------------------------------------------
+def _trainer(request: web.Request):
+    trainer = request.app[HUB].trainer
+    if trainer is None:
+        raise web.HTTPServiceUnavailable(text="Training is not available in this installation")
+    return trainer
+
+
+def _phrase(request: web.Request) -> str:
+    phrase = " ".join(request.query.get("phrase", "").split())
+    if len(phrase) < 3 or len(phrase) > 40:
+        raise ValueError("Enter the wake word first")
+    return phrase
+
+
+async def training_languages(request: web.Request) -> web.Response:
+    from . import trainer as tr
+
+    trainer = _trainer(request)
+    loop = asyncio.get_running_loop()
+    try:
+        index = await loop.run_in_executor(None, tr.load_voice_index, trainer.assets)
+        return web.json_response({"languages": tr.languages(index), "online": True})
+    except Exception as err:  # offline: training would fail too, but let the UI say so
+        _LOGGER.warning("Could not load the voice list: %s", err)
+        return web.json_response({"languages": tr.FALLBACK_LANGUAGES, "online": False})
+
+
+async def training_start(request: web.Request) -> web.Response:
+    from .trainer import TrainingConfig
+
+    trainer = _trainer(request)
+    try:
+        data = await request.json()
+        trainer.start(TrainingConfig(
+            phrase=str(data.get("phrase", "")),
+            language=str(data.get("language") or "en_US"),
+            quality=str(data.get("quality") or "standard"),
+        ))
+    except (ValueError, json.JSONDecodeError, AttributeError) as err:
+        return _error(400, str(err))
+    return web.json_response(trainer.status.as_dict())
+
+
+async def training_cancel(request: web.Request) -> web.Response:
+    trainer = _trainer(request)
+    trainer.cancel()
+    return web.json_response(trainer.status.as_dict())
+
+
+async def samples_list(request: web.Request) -> web.Response:
+    trainer = _trainer(request)
+    try:
+        return web.json_response({"samples": trainer.list_samples(_phrase(request))})
+    except ValueError:
+        return web.json_response({"samples": []})
+
+
+async def samples_add(request: web.Request) -> web.Response:
+    """Body: raw 16 kHz mono 16-bit PCM of one recording of the wake word."""
+    trainer = _trainer(request)
+    try:
+        phrase = _phrase(request)
+        pcm = await request.read()
+        if len(pcm) > 16000 * 2 * 15:
+            raise ValueError("The recording is too long - say only the wake word")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, trainer.add_sample, phrase, pcm)
+    except ValueError as err:
+        return _error(400, str(err))
+    return web.json_response({"samples": trainer.list_samples(phrase)})
+
+
+async def samples_get(request: web.Request) -> web.StreamResponse:
+    trainer = _trainer(request)
+    name = request.match_info["name"]
+    try:
+        phrase = _phrase(request)
+    except ValueError as err:
+        return _error(400, str(err))
+    path = trainer.sample_dir(phrase) / name
+    if not re.fullmatch(r"\d+\.wav", name) or not path.is_file():
+        return _error(404, "Unknown recording")
+    return web.FileResponse(path)
+
+
+async def samples_delete(request: web.Request) -> web.Response:
+    trainer = _trainer(request)
+    try:
+        phrase = _phrase(request)
+        trainer.delete_sample(phrase, request.match_info["name"])
+    except ValueError as err:
+        return _error(400, str(err))
+    return web.json_response({"samples": trainer.list_samples(phrase)})
 
 
 async def rescan(request: web.Request) -> web.Response:
@@ -273,6 +370,13 @@ def create_app(hub: Hub, restrict_to_ingress: bool = False) -> web.Application:
     app.router.add_post("/api/rescan", rescan)
     app.router.add_put("/api/models/{model_id}", put_model)
     app.router.add_delete("/api/models/{model_id}", delete_model)
+    app.router.add_get("/api/training/languages", training_languages)
+    app.router.add_post("/api/training/start", training_start)
+    app.router.add_post("/api/training/cancel", training_cancel)
+    app.router.add_get("/api/training/samples", samples_list)
+    app.router.add_post("/api/training/samples", samples_add)
+    app.router.add_get("/api/training/samples/{name}", samples_get)
+    app.router.add_delete("/api/training/samples/{name}", samples_delete)
     app.router.add_get("/ws/events", ws_events)
     app.router.add_get("/ws/test", ws_test)
     app.router.add_static("/static/", STATIC_DIR)

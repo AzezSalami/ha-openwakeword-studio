@@ -1,7 +1,7 @@
 name: openWakeWord Studio
-version: "1.0.0"
+version: "1.1.0"
 slug: openwakeword_studio
-description: Wake word detection with openWakeWord, plus a web UI to manage, test and tune your wake words
+description: Wake word detection with openWakeWord, plus a web UI to create, manage, test and tune your wake words
 arch:
   - amd64
   - aarch64
@@ -19,6 +19,10 @@ ports:
   10400/tcp: 10400
 ports_description:
   10400/tcp: Wyoming protocol (used by Home Assistant and voice satellites)
+# downloaded voices and training data can be fetched again; keep backups small
+backup_exclude:
+  - "*/training/assets/*"
+  - "training/assets/**"
 options:
   custom_model_dir: /share/openwakeword
   debug_logging: false

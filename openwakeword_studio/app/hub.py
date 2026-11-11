@@ -43,6 +43,32 @@ class Hub:
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="oww")
         self._subscribers: set[asyncio.Queue] = set()
         self._ids = itertools.count(1)
+        self.trainer = None  # set by attach_trainer()
+
+    # -- training -------------------------------------------------------
+    def attach_trainer(self, data_dir, loop: asyncio.AbstractEventLoop) -> None:
+        from .trainer import Trainer
+
+        def on_update() -> None:
+            loop.call_soon_threadsafe(self._publish_training)
+
+        def on_model(model_id: str, meta: dict) -> None:
+            loop.call_soon_threadsafe(self._model_trained, model_id, meta)
+
+        self.trainer = Trainer(data_dir, self.registry.custom_dir, on_update, on_model)
+
+    def _publish_training(self) -> None:
+        if self._subscribers and self.trainer:
+            self.publish({"type": "training", "status": self.trainer.status.as_dict()})
+
+    def _model_trained(self, model_id: str, meta: dict) -> None:
+        self.registry.scan()
+        recommended = meta["metrics"]["recommended_threshold"]
+        same = abs(recommended - self.settings.get("threshold")) < 1e-6
+        self.settings.update_model(
+            model_id, {"enabled": True, "threshold": None if same else recommended}
+        )
+        self.publish_state()
 
     # -- pub/sub --------------------------------------------------------
     def subscribe(self) -> asyncio.Queue:
@@ -135,4 +161,6 @@ class Hub:
             "clients": list(self.clients.values()),
             "detections": list(self.detections)[:50],
             "total_detections": self.total_detections,
+            "training": self.trainer.status.as_dict() if self.trainer else None,
+            "can_train": self.trainer is not None,
         }
